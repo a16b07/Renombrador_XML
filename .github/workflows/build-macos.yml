@@ -32,10 +32,10 @@ jobs:
         run: |
           codesign --force --deep --sign - "dist/RenombradorXML.app"
 
-      - name: Comprimir la app
+      - name: Comprimir la app (ditto preserva symlinks y firma)
         run: |
           cd dist
-          zip -r RenombradorXML-macOS.zip RenombradorXML.app
+          ditto -c -k --sequesterRsrc --keepParent RenombradorXML.app RenombradorXML-macOS.zip
 
       - name: Subir artefacto
         uses: actions/upload-artifact@v4

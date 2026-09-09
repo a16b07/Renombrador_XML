@@ -1,18 +1,18 @@
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from pathlib import Path
-from renombrador import plan_renames, execute_renames
+from renombrador import plan_renames_tree, execute_renames
 
 
 class XMLRenamerApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Renombrador de XML")
-        self.root.geometry("850x560")
-        self.root.minsize(720, 480)
+        self.root.geometry("950x600")
+        self.root.minsize(760, 480)
 
-        self.folder = None
-        self.plan = []
+        self.root_folder = None
+        self.tree_data = []  # [{"folder": Path, "items": [...]}, ...]
 
         frame = ttk.Frame(root, padding=20)
         frame.pack(fill="both", expand=True)
@@ -24,16 +24,17 @@ class XMLRenamerApp:
 
         ttk.Label(
             frame,
-            text="Selecciona una carpeta. El programa leerá fechaYHoraCorte de cada XML "
-                 "y corregirá la fecha dentro del nombre del archivo.",
-            wraplength=780
+            text="Selecciona una carpeta principal. Puede contener los XML directamente, "
+                 "o varias subcarpetas con XML dentro: se revisan todas. El programa lee "
+                 "fechaYHoraCorte de cada XML y corrige solo la fecha dentro del nombre.",
+            wraplength=880
         ).pack(anchor="w", pady=(8, 18))
 
         buttons = ttk.Frame(frame)
         buttons.pack(fill="x")
 
         ttk.Button(
-            buttons, text="Seleccionar carpeta", command=self.select_folder
+            buttons, text="Seleccionar carpeta principal", command=self.select_folder
         ).pack(side="left")
 
         self.rename_button = ttk.Button(
@@ -45,17 +46,21 @@ class XMLRenamerApp:
         self.status = ttk.Label(frame, text="Ninguna carpeta seleccionada.")
         self.status.pack(anchor="w", pady=12)
 
-        columns = ("actual", "fecha", "nuevo", "estado")
-        self.tree = ttk.Treeview(frame, columns=columns, show="headings")
-        self.tree.heading("actual", text="Nombre actual")
+        columns = ("fecha", "nuevo", "estado")
+        self.tree = ttk.Treeview(frame, columns=columns, show="tree headings")
+        self.tree.heading("#0", text="Carpeta / Archivo")
         self.tree.heading("fecha", text="Fecha encontrada")
         self.tree.heading("nuevo", text="Nuevo nombre")
         self.tree.heading("estado", text="Estado")
 
-        self.tree.column("actual", width=250)
-        self.tree.column("fecha", width=130)
-        self.tree.column("nuevo", width=300)
-        self.tree.column("estado", width=100)
+        self.tree.column("#0", width=320)
+        self.tree.column("fecha", width=120)
+        self.tree.column("nuevo", width=320)
+        self.tree.column("estado", width=140)
+
+        self.tree.tag_configure("folder", font=("Arial", 10, "bold"))
+        self.tree.tag_configure("error", foreground="#b00020")
+        self.tree.tag_configure("nochange", foreground="#888888")
 
         scrollbar = ttk.Scrollbar(frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=scrollbar.set)
@@ -64,76 +69,138 @@ class XMLRenamerApp:
         scrollbar.pack(side="right", fill="y")
 
     def select_folder(self):
-        folder = filedialog.askdirectory(title="Selecciona la carpeta con los XML")
+        folder = filedialog.askdirectory(
+            title="Selecciona la carpeta principal (puede tener subcarpetas)"
+        )
         if not folder:
             return
 
-        self.folder = Path(folder)
+        self.root_folder = Path(folder)
         self.refresh_preview()
 
+    def _folder_label(self, folder: Path) -> str:
+        try:
+            rel = folder.relative_to(self.root_folder)
+        except ValueError:
+            return str(folder)
+        return str(rel) if str(rel) != "." else f"{folder.name}  (carpeta principal)"
+
     def refresh_preview(self):
-        for item in self.tree.get_children():
-            self.tree.delete(item)
+        self.tree.delete(*self.tree.get_children())
 
         try:
-            self.plan = plan_renames(self.folder)
+            self.tree_data = plan_renames_tree(self.root_folder)
         except Exception as exc:
             messagebox.showerror("Error", str(exc))
-            self.plan = []
+            self.tree_data = []
             return
 
-        changes = 0
-        errors = 0
+        if not self.tree_data:
+            self.status.config(text="No se encontraron archivos .xml en esta carpeta ni en sus subcarpetas.")
+            self.rename_button.config(state="disabled")
+            return
 
-        for item in self.plan:
-            self.tree.insert(
-                "", "end",
-                values=(item["old_name"], item["date"], item["new_name"], item["status"])
+        total_files = 0
+        total_changes = 0
+        total_errors = 0
+
+        for group in self.tree_data:
+            items = group["items"]
+            label = self._folder_label(group["folder"])
+
+            folder_changes = sum(
+                1 for it in items if it["status"] == "Listo" and it["old_name"] != it["new_name"]
             )
-            if item["status"] == "Listo":
-                if item["old_name"] != item["new_name"]:
-                    changes += 1
-            else:
-                errors += 1
+            folder_errors = sum(1 for it in items if it["status"] != "Listo")
+
+            folder_id = self.tree.insert(
+                "", "end",
+                text=f"\U0001F4C1 {label}  —  {len(items)} archivo(s), {folder_changes} cambio(s), {folder_errors} error(es)",
+                open=True,
+                tags=("folder",),
+            )
+
+            for item in items:
+                if item["status"] != "Listo":
+                    tag = "error"
+                elif item["old_name"] == item["new_name"]:
+                    tag = "nochange"
+                else:
+                    tag = ""
+
+                self.tree.insert(
+                    folder_id, "end",
+                    text=item["old_name"],
+                    values=(item["date"], item["new_name"], item["status"]),
+                    tags=(tag,) if tag else (),
+                )
+
+            total_files += len(items)
+            total_changes += folder_changes
+            total_errors += folder_errors
 
         self.status.config(
-            text=f"{len(self.plan)} XML encontrados | {changes} necesitan cambio | {errors} con error"
+            text=(
+                f"{len(self.tree_data)} carpeta(s) con XML  |  {total_files} archivo(s)  |  "
+                f"{total_changes} necesitan cambio  |  {total_errors} con error"
+            )
         )
-        self.rename_button.config(
-            state="normal" if changes and not errors else "disabled"
-        )
+        self.rename_button.config(state="normal" if total_changes else "disabled")
 
     def rename_files(self):
-        if not self.folder or not self.plan:
+        if not self.tree_data:
             return
 
-        changes = [
-            x for x in self.plan
-            if x["status"] == "Listo" and x["old_name"] != x["new_name"]
-        ]
+        total_planned = sum(
+            1 for g in self.tree_data for it in g["items"]
+            if it["status"] == "Listo" and it["old_name"] != it["new_name"]
+        )
 
-        if not changes:
-            messagebox.showinfo("Sin cambios", "Todos los nombres ya son correctos.")
+        if not total_planned:
+            messagebox.showinfo("Sin cambios", "No hay archivos para renombrar.")
             return
+
+        folders_with_changes = sum(
+            1 for g in self.tree_data
+            if any(it["status"] == "Listo" and it["old_name"] != it["new_name"] for it in g["items"])
+        )
 
         ok = messagebox.askyesno(
             "Confirmar",
-            f"Se renombrarán {len(changes)} archivo(s).\n\n"
-            "El contenido de los XML no será modificado.\n\n"
+            f"Se renombrarán {total_planned} archivo(s) en {folders_with_changes} carpeta(s).\n\n"
+            "El contenido de los XML no será modificado.\n"
+            "Los archivos marcados como error se dejarán sin tocar.\n\n"
             "¿Continuar?"
         )
         if not ok:
             return
 
-        try:
-            execute_renames(self.folder, changes)
-        except Exception as exc:
-            messagebox.showerror("Error", str(exc))
-            self.refresh_preview()
-            return
+        renamed = 0
+        failed_folders = []
+
+        for group in self.tree_data:
+            changes = [
+                it for it in group["items"]
+                if it["status"] == "Listo" and it["old_name"] != it["new_name"]
+            ]
+            if not changes:
+                continue
+            try:
+                execute_renames(group["folder"], changes)
+                renamed += len(changes)
+            except Exception as exc:
+                failed_folders.append((self._folder_label(group["folder"]), str(exc)))
 
         self.refresh_preview()
-        messagebox.showinfo("Listo", f"Se renombraron {len(changes)} archivo(s).")
+
+        if failed_folders:
+            details = "\n".join(f"- {label}: {err}" for label, err in failed_folders)
+            messagebox.showwarning(
+                "Terminado con errores",
+                f"Se renombraron {renamed} archivo(s).\n\nHubo problemas en:\n{details}"
+            )
+        else:
+            messagebox.showinfo("Listo", f"Se renombraron {renamed} archivo(s) en total.")
 
 
 if __name__ == "__main__":

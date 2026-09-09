@@ -61,6 +61,7 @@ class XMLRenamerApp:
         self.tree.tag_configure("folder", font=("Arial", 10, "bold"))
         self.tree.tag_configure("error", foreground="#b00020")
         self.tree.tag_configure("nochange", foreground="#888888")
+        self.tree.tag_configure("change", foreground="#0a7d2c", font=("Arial", 10, "bold"))
 
         scrollbar = ttk.Scrollbar(frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=scrollbar.set)
@@ -123,16 +124,19 @@ class XMLRenamerApp:
             for item in items:
                 if item["status"] != "Listo":
                     tag = "error"
+                    display_status = f"⚠ {item['status']}"
                 elif item["old_name"] == item["new_name"]:
                     tag = "nochange"
+                    display_status = "— Sin cambios"
                 else:
-                    tag = ""
+                    tag = "change"
+                    display_status = "✔ Requiere cambio"
 
                 self.tree.insert(
                     folder_id, "end",
                     text=item["old_name"],
-                    values=(item["date"], item["new_name"], item["status"]),
-                    tags=(tag,) if tag else (),
+                    values=(item["date"], item["new_name"], display_status),
+                    tags=(tag,),
                 )
 
             total_files += len(items)
